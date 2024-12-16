@@ -67,11 +67,23 @@ RUN source $HOME/.cargo/env && cd aws-nitro-enclaves-nsm-api && cargo build --re
 RUN mv aws-nitro-enclaves-nsm-api/target/release/libnsm.so /usr/lib64
 RUN mv aws-nitro-enclaves-nsm-api/target/release/nsm.h /usr/include
 
+# Download dependencies first - this layer will be cached unless go.mod/go.sum changes
+COPY bin/kmstool-enclave-cli-go/go.mod bin/kmstool-enclave-cli-go/go.sum aws-nitro-enclaves-sdk-c/bin/kmstool-enclave-cli-go/
+RUN --mount=type=cache,target=/go/pkg/mod cd aws-nitro-enclaves-sdk-c/bin/kmstool-enclave-cli-go && go mod download
+
 COPY . aws-nitro-enclaves-sdk-c
 RUN cmake3 -DCMAKE_PREFIX_PATH=/usr -DCMAKE_INSTALL_PREFIX=/usr -GNinja \
 	-S aws-nitro-enclaves-sdk-c -B aws-nitro-enclaves-sdk-c/build
 RUN cmake3 --build aws-nitro-enclaves-sdk-c/build --parallel $(nproc) --target install
 RUN cmake3 --build aws-nitro-enclaves-sdk-c/build --parallel $(nproc) --target docs
+
+RUN cp /usr/lib64/libnsm.so aws-nitro-enclaves-sdk-c/bin/kmstool-enclave-cli-go/nsm
+RUN cp /usr/include/nsm.h aws-nitro-enclaves-sdk-c/bin/kmstool-enclave-cli-go/nsm
+RUN \
+   --mount=type=cache,target=/go/pkg/mod \
+   --mount=type=cache,target=/root/.cache/go-build \
+   cd aws-nitro-enclaves-sdk-c/bin/kmstool-enclave-cli-go && \
+   go build -o /usr/bin/kmstool_enclave_cli_go .
 
 # kmstool-enclave
 RUN mkdir -p /rootfs
@@ -119,6 +131,14 @@ FROM $BASE_IMAGE as kmstool-enclave-cli
 RUN rpm -e python python-libs python-urlgrabber python2-rpm pygpgme pyliblzma python-iniparse pyxattr python-pycurl amazon-linux-extras yum yum-metadata-parser yum-plugin-ovl yum-plugin-priorities
 COPY --from=builder /usr/lib64/libnsm.so /usr/lib64/libnsm.so
 COPY --from=builder /usr/bin/kmstool_enclave_cli /kmstool_enclave_cli
+
+# kmstool-enclave-cli-go
+FROM $BASE_IMAGE as kmstool-enclave-cli-go
+
+# TODO: building packages statically instead of cleaning up unwanted packages from amazonlinux
+RUN rpm -e python python-libs python-urlgrabber python2-rpm pygpgme pyliblzma python-iniparse pyxattr python-pycurl amazon-linux-extras yum yum-metadata-parser yum-plugin-ovl yum-plugin-priorities
+COPY --from=builder /usr/lib64/libnsm.so /usr/lib64/libnsm.so
+COPY --from=builder /usr/bin/kmstool_enclave_cli_go /kmstool_enclave_cli_go
 
 # Test
 FROM builder as test
